@@ -11,6 +11,9 @@ type Publicacion = { id: number; materia: Materia; rol: string; texto: string; r
 type Resultado = Record<Materia, number>;
 type ResultadosEj = Record<Materia, number | null>;
 type Fase = "elegir" | "aviso" | "examen" | "resultado";
+type Articulo = { titulo: string; parrafos: string[] };
+type Articulos = Record<Materia, Articulo[]>;
+type Pendiente = { tipo: "publicar" } | { tipo: "baja"; indice: number };
 
 const TIEMPO_MIN = 20;
 const TIEMPO_DIAG_MIN = 30;
@@ -49,7 +52,7 @@ const videos: { materia: Materia; titulo: string; url: string }[] = [
   { materia: "Ciencias", titulo: "El sistema solar", url: "" },
 ];
 
-const resumenes: Record<Materia, { titulo: string; parrafos: string[] }[]> = {
+const resumenes: Articulos = {
   Matemáticas: [
     {
       titulo: "Suma de fracciones",
@@ -314,7 +317,7 @@ function Pestanas({ materia, setMateria }: { materia: Materia; setMateria: (m: M
   );
 }
 
-function Inicio({ ir, abrirMateria }: { ir: (s: Seccion) => void; abrirMateria: (m: Materia) => void }) {
+function Inicio({ ir, abrirMateria, articulos }: { ir: (s: Seccion) => void; abrirMateria: (m: Materia) => void; articulos: Articulos }) {
   return (
     <section>
       <div className="portada">
@@ -331,7 +334,7 @@ function Inicio({ ir, abrirMateria }: { ir: (s: Seccion) => void; abrirMateria: 
             <div className="info">
               <h3>{m}</h3>
               <p className="stats">
-                {videos.filter((v) => v.materia === m).length} videos · {resumenes[m].length} resúmenes · {banco[m].length} ejercicios
+                {videos.filter((v) => v.materia === m).length} videos · {articulos[m].length} resúmenes · {banco[m].length} ejercicios
               </p>
               <button className="secundario" onClick={() => abrirMateria(m)}>Iniciar</button>
             </div>
@@ -379,20 +382,92 @@ function Videos({ materia, setMateria }: { materia: Materia; setMateria: (m: Mat
   );
 }
 
-function Resumenes({ materia, setMateria }: { materia: Materia; setMateria: (m: Materia) => void }) {
+function Resumenes({
+  materia,
+  setMateria,
+  articulos,
+  setArticulos,
+}: {
+  materia: Materia;
+  setMateria: (m: Materia) => void;
+  articulos: Articulos;
+  setArticulos: (a: Articulos) => void;
+}) {
+  const [titulo, setTitulo] = useState("");
+  const [texto, setTexto] = useState("");
+  const [aviso, setAviso] = useState("");
+  const [pendiente, setPendiente] = useState<Pendiente | null>(null);
+
+  const pedirPublicar = () => {
+    if (titulo.trim().length < 5 || texto.trim().length < 20) {
+      setAviso("Escribe un título de al menos 5 caracteres y un texto de al menos 20.");
+      return;
+    }
+    setAviso("");
+    setPendiente({ tipo: "publicar" });
+  };
+
+  const confirmar = () => {
+    if (!pendiente) return;
+    if (pendiente.tipo === "publicar") {
+      const nuevo: Articulo = { titulo: titulo.trim(), parrafos: texto.trim().split(/\n+/) };
+      setArticulos({ ...articulos, [materia]: [...articulos[materia], nuevo] });
+      setTitulo("");
+      setTexto("");
+    } else {
+      setArticulos({ ...articulos, [materia]: articulos[materia].filter((_, i) => i !== pendiente.indice) });
+    }
+    setPendiente(null);
+  };
+
+  const nombreBaja = pendiente && pendiente.tipo === "baja" ? articulos[materia][pendiente.indice]?.titulo : "";
+
   return (
     <section>
       <h2>Resúmenes de apoyo</h2>
       <p className="sub">Repasa la teoría de cada tema antes de practicar.</p>
       <Pestanas materia={materia} setMateria={setMateria} />
-      {resumenes[materia].map((r) => (
-        <div className={`tarjeta resumen ${tono[materia]}`} key={r.titulo}>
+
+      {articulos[materia].length === 0 && <p className="sub">No hay artículos publicados en esta materia.</p>}
+
+      {articulos[materia].map((r, i) => (
+        <div className={`tarjeta resumen ${tono[materia]}`} key={`${r.titulo}-${i}`}>
           <h3>{r.titulo}</h3>
-          {r.parrafos.map((p, i) => (
-            <p key={i}>{p}</p>
+          {r.parrafos.map((p, k) => (
+            <p key={k}>{p}</p>
           ))}
+          <button className="peligro" onClick={() => setPendiente({ tipo: "baja", indice: i })}>Dar de baja</button>
         </div>
       ))}
+
+      <div className="tarjeta">
+        <h3>Publicar un artículo en {materia}</h3>
+        <div className="fila">
+          <input value={titulo} onChange={(e) => setTitulo(e.target.value)} placeholder="Título del artículo" />
+        </div>
+        <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="Escribe el contenido del artículo" rows={4} />
+        {aviso && <p className="mal">{aviso}</p>}
+        <button className="principal" onClick={pedirPublicar}>Publicar artículo</button>
+      </div>
+
+      {pendiente && (
+        <div className="modal-fondo">
+          <div className="modal">
+            <h3>{pendiente.tipo === "publicar" ? "¿Publicar artículo?" : "¿Dar de baja el artículo?"}</h3>
+            <p>
+              {pendiente.tipo === "publicar"
+                ? `Vas a publicar el artículo "${titulo.trim()}" en ${materia}. Quedará visible para los estudiantes.`
+                : `Vas a dar de baja el artículo "${nombreBaja}". Dejará de mostrarse en el sitio.`}
+            </p>
+            <div className="acciones">
+              <button className="principal" onClick={confirmar}>
+                {pendiente.tipo === "publicar" ? "Sí, publicar" : "Sí, dar de baja"}
+              </button>
+              <button className="secundario" onClick={() => setPendiente(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -946,6 +1021,7 @@ export default function App() {
   const [materiaSel, setMateriaSel] = useState<Materia>("Matemáticas");
   const [resultadosEj, setResultadosEj] = useState<ResultadosEj>({ Matemáticas: null, Español: null, Ciencias: null });
   const [diag, setDiag] = useState<Resultado | null>(null);
+  const [articulos, setArticulos] = useState<Articulos>(resumenes);
   const [posts, setPosts] = useState<Publicacion[]>([
     { id: 1, materia: "Matemáticas", rol: "Tutor", texto: "Bienvenidos al foro. Publiquen aquí sus dudas de cada materia.", respuestas: [] },
   ]);
@@ -986,9 +1062,9 @@ export default function App() {
         </aside>
         {menuAbierto && <div className="velo" onClick={() => setMenuAbierto(false)} />}
         <main>
-          {seccion === "inicio" && <Inicio ir={ir} abrirMateria={abrirMateria} />}
+          {seccion === "inicio" && <Inicio ir={ir} abrirMateria={abrirMateria} articulos={articulos} />}
           {seccion === "videos" && <Videos materia={materiaSel} setMateria={setMateriaSel} />}
-          {seccion === "resumenes" && <Resumenes materia={materiaSel} setMateria={setMateriaSel} />}
+          {seccion === "resumenes" && <Resumenes materia={materiaSel} setMateria={setMateriaSel} articulos={articulos} setArticulos={setArticulos} />}
           <div style={{ display: seccion === "ejercicios" ? "block" : "none" }}>
             <Ejercicios resultados={resultadosEj} guardar={guardarResultado} />
           </div>
