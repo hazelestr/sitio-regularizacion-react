@@ -103,6 +103,12 @@ const consejo: Record<Nivel, string> = {
   Avanzado: "Refuerza con ejercicios y avanza al siguiente tema.",
 };
 
+const destino: Record<Nivel, { seccion: Seccion; texto: string }> = {
+  Básico: { seccion: "videos", texto: "Ver videos" },
+  Intermedio: { seccion: "resumenes", texto: "Ver resúmenes" },
+  Avanzado: { seccion: "ejercicios", texto: "Ir a ejercicios" },
+};
+
 function Barra({ etiqueta, valor, total }: { etiqueta: string; valor: number; total: number }) {
   const pct = total === 0 ? 0 : Math.round((valor / total) * 100);
   return (
@@ -278,22 +284,42 @@ function Diagnostico({ diag, setDiag }: { diag: Resultado | null; setDiag: (r: R
 function Avance({ respuestas, diag }: { respuestas: Record<number, number>; diag: Resultado | null }) {
   const correctas = ejercicios.filter((e, i) => respuestas[i] === e.correcta).length;
   const contestadas = Object.keys(respuestas).length;
+  const totalDiag = diag ? materias.reduce((suma, m) => suma + diag[m], 0) : 0;
+
   return (
     <section>
       <h2>Panel de avance</h2>
       <p className="sub">Resumen para que la familia vea cómo va el estudiante en cada materia.</p>
-      <div className="tarjeta">
-        <h3>Ejercicios de matemáticas</h3>
-        <Barra etiqueta="Ejercicios contestados" valor={contestadas} total={ejercicios.length} />
-        <Barra etiqueta="Respuestas correctas" valor={correctas} total={ejercicios.length} />
-      </div>
-      <div className="tarjeta">
-        <h3>Diagnóstico por materia</h3>
+
+      <div className="tarjeta destacada">
+        <h3>Resumen general</h3>
         {diag ? (
-          materias.map((m) => <Barra key={m} etiqueta={`${m} (${nivelDe(diag[m])})`} valor={diag[m]} total={2} />)
+          <Barra etiqueta="Diagnóstico (todas las materias)" valor={totalDiag} total={diagnostico.length} />
         ) : (
           <p>Aún no se ha contestado el examen diagnóstico.</p>
         )}
+        <Barra etiqueta="Ejercicios contestados" valor={contestadas} total={ejercicios.length} />
+      </div>
+
+      <div className="rejilla">
+        {materias.map((m) => (
+          <div className="tarjeta" key={m}>
+            <span className="etiqueta">{m}</span>
+            {diag ? (
+              <>
+                <h3>Nivel {nivelDe(diag[m])}</h3>
+                <Barra etiqueta="Diagnóstico" valor={diag[m]} total={2} />
+              </>
+            ) : (
+              <p>Sin diagnóstico todavía.</p>
+            )}
+            {m === "Matemáticas" ? (
+              <Barra etiqueta="Ejercicios correctos" valor={correctas} total={ejercicios.length} />
+            ) : (
+              <p className="sub">Ejercicios disponibles en el Sprint 3.</p>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -398,13 +424,19 @@ function Plan({ diag, ir }: { diag: Resultado | null; ir: (s: Seccion) => void }
         <p>Según tu diagnóstico, conviene comenzar con el video de {primera}{video ? ` titulado ${video.titulo}` : ""}.</p>
         <button className="principal" onClick={() => ir("videos")}>Ver videos</button>
       </div>
-      {orden.map((m) => (
-        <div className="tarjeta" key={m}>
-          <span className="etiqueta">{m}</span>
-          <h3>Nivel {nivelDe(diag[m])}</h3>
-          <p>{consejo[nivelDe(diag[m])]}</p>
-        </div>
-      ))}
+      {orden.map((m) => {
+        const nivel = nivelDe(diag[m]);
+        return (
+          <div className="tarjeta" key={m}>
+            <span className="etiqueta">{m}</span>
+            <h3>Nivel {nivel}</h3>
+            <p>{consejo[nivel]}</p>
+            <button className="secundario" onClick={() => ir(destino[nivel].seccion)}>
+              {destino[nivel].texto}
+            </button>
+          </div>
+        );
+      })}
     </section>
   );
 }
