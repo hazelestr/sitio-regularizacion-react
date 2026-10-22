@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
 type Materia = "Matemáticas" | "Español" | "Ciencias";
-type Seccion = "inicio" | "videos" | "resumenes" | "ejercicios" | "diagnostico" | "foro" | "panel";
+type Seccion = "inicio" | "videos" | "resumenes" | "ejercicios" | "diagnostico" | "guias" | "foro" | "panel";
 type Nivel = "Básico" | "Intermedio" | "Avanzado";
 type Pregunta = { pregunta: string; opciones: string[]; correcta: number; explicacion: string };
 type PreguntaDiag = { materia: Materia; pregunta: string; opciones: string[]; correcta: number };
@@ -14,6 +14,13 @@ type Fase = "elegir" | "aviso" | "examen" | "resultado";
 type Articulo = { titulo: string; parrafos: string[] };
 type Articulos = Record<Materia, Articulo[]>;
 type Pendiente = { tipo: "publicar" } | { tipo: "baja"; indice: number };
+type Rol = "docente" | "alumno" | "familia";
+type Sesion = { rol: Rol; nombre: string };
+type Siguiente = { titulo: string; detalle: string; pct: number; boton: string; destino: Seccion };
+type Grupo = { etiqueta: string; valores: (number | null)[] };
+type SeccionGuia = { encabezado: string; lineas: string[] };
+type Guia = { id: string; titulo: string; desc: string; secciones: SeccionGuia[] };
+type Notificacion = { id: number; para: Rol; texto: string; destino: Seccion; hora: string; leida: boolean };
 
 const TIEMPO_MIN = 20;
 const TIEMPO_DIAG_MIN = 30;
@@ -27,15 +34,26 @@ const tono: Record<Materia, string> = {
   Ciencias: "morado",
 };
 
+const permitidas: Record<Rol, Seccion[]> = {
+  alumno: ["videos", "resumenes", "ejercicios", "diagnostico", "guias", "foro"],
+  docente: ["videos", "resumenes", "guias", "foro"],
+  familia: ["guias", "foro"],
+};
+
+const descRol: Record<Rol, string> = {
+  alumno: "Accede a videos, resúmenes, ejercicios, diagnóstico, guías y foro.",
+  docente: "Gestiona artículos, atiende el foro y revisa el avance del estudiante.",
+  familia: "Consulta el avance del estudiante, descarga guías y escribe tus dudas al tutor en el foro.",
+};
+
 const secciones: { id: Seccion; nombre: string; desc: string }[] = [
   { id: "videos", nombre: "Videos", desc: "Explicaciones cortas por materia para reforzar lo que no quedó claro en clase." },
   { id: "resumenes", nombre: "Resúmenes", desc: "Artículos breves para repasar la teoría antes de practicar." },
   { id: "ejercicios", nombre: "Ejercicios", desc: "Presenta ejercicios por materia con tiempo y conoce tus aciertos al final." },
   { id: "diagnostico", nombre: "Diagnóstico", desc: "Un examen de 30 preguntas con tiempo que calcula tu nivel en cada materia." },
+  { id: "guias", nombre: "Guías", desc: "Guías en PDF por materia para ver o descargar y estudiar sin conexión." },
   { id: "foro", nombre: "Foro", desc: "Espacio para publicar dudas y recibir respuestas de un tutor." },
 ];
-
-const menu: { id: Seccion; nombre: string }[] = [{ id: "inicio", nombre: "Inicio" }, ...secciones.map((s) => ({ id: s.id, nombre: s.nombre }))];
 
 const videos: { materia: Materia; titulo: string; url: string }[] = [
   { materia: "Matemáticas", titulo: "Suma de fracciones con distinto denominador", url: "" },
@@ -235,11 +253,16 @@ const diagnostico: PreguntaDiag[] = [
 const prohibidas = ["idiota", "estupido", "estúpido", "tonto", "imbecil", "imbécil"];
 
 const moderar = (texto: string): string | null => {
-  if (texto.trim().length < 5) return "Escribe un mensaje un poco más largo para poder ayudarte.";
-  const t = texto.toLowerCase();
+  const limpio = texto.trim();
+  if (limpio.length < 5) return "Escribe un mensaje un poco más largo para poder ayudarte.";
+  if (limpio.length > 500) return "Tu mensaje es demasiado largo. Usa máximo 500 caracteres.";
+  if (/https?:\/\/|www\./i.test(limpio)) return "Por seguridad no se permiten enlaces en el foro.";
+  const t = limpio.toLowerCase();
   if (prohibidas.some((p) => t.includes(p))) return "Tu mensaje contiene lenguaje no permitido en el foro.";
   return null;
 };
+
+const esDuda = (p: Publicacion) => p.rol !== "Tutor";
 
 const nivelDe = (aciertos: number): Nivel => {
   if (aciertos >= 8) return "Avanzado";
@@ -261,39 +284,289 @@ const destino: Record<Nivel, { seccion: Seccion; texto: string }> = {
 
 const formato = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
+const pctDe = (valor: number, total: number) => (total === 0 ? 0 : Math.round((valor / total) * 100));
+
 const mensajeDe = (pct: number) => {
   if (pct >= 80) return "Excelente trabajo, dominas bien este tema.";
   if (pct >= 50) return "Vas bien. Revisa las preguntas que fallaste para reforzar.";
   return "Conviene repasar los resúmenes y videos de esta materia antes de intentarlo de nuevo.";
 };
 
-function IconoUsuario() {
+const saludoDe = () => {
+  const hora = new Date().getHours();
+  if (hora < 12) return "Buenos días";
+  if (hora < 19) return "Buenas tardes";
+  return "Buenas noches";
+};
+
+const siguientePaso = (rol: Rol, posts: Publicacion[], diag: Resultado | null, resultados: ResultadosEj): Siguiente => {
+  if (rol === "docente") {
+    const dudas = posts.filter(esDuda);
+    const atendidas = dudas.filter((p) => p.respuestas.length > 0).length;
+    const pendientes = dudas.length - atendidas;
+    return {
+      titulo: "Dudas por atender",
+      detalle: pendientes === 0 ? "No hay dudas pendientes en el foro" : `${pendientes} dudas sin responder en el foro`,
+      pct: pctDe(atendidas, dudas.length),
+      boton: "Ir al foro",
+      destino: "foro",
+    };
+  }
+  if (rol === "familia") {
+    if (!diag) {
+      return {
+        titulo: "Avance del estudiante",
+        detalle: "El estudiante aún no contesta el examen diagnóstico",
+        pct: 0,
+        boton: "Ver avance",
+        destino: "panel",
+      };
+    }
+    const m = [...materias].sort((a, b) => diag[a] - diag[b])[0];
+    const nivel = nivelDe(diag[m]);
+    const hecho = resultados[m];
+    return {
+      titulo: `Apoya en ${m}`,
+      detalle: `Nivel ${nivel}. ${consejo[nivel]}`,
+      pct: hecho === null ? 0 : pctDe(hecho, banco[m].length),
+      boton: "Ver avance",
+      destino: "panel",
+    };
+  }
+  if (!diag) {
+    return {
+      titulo: "Examen diagnóstico",
+      detalle: "Descubre tu nivel en matemáticas, español y ciencias",
+      pct: 0,
+      boton: "Comenzar",
+      destino: "diagnostico",
+    };
+  }
+  const m = [...materias].sort((a, b) => diag[a] - diag[b])[0];
+  const nivel = nivelDe(diag[m]);
+  const hecho = resultados[m];
+  return {
+    titulo: `Refuerza ${m}`,
+    detalle: `Nivel ${nivel}. ${consejo[nivel]}`,
+    pct: hecho === null ? 0 : pctDe(hecho, banco[m].length),
+    boton: destino[nivel].texto,
+    destino: destino[nivel].seccion,
+  };
+};
+
+const progresoDe = (docente: boolean, posts: Publicacion[], diag: Resultado | null, resultados: ResultadosEj) => {
+  if (docente) {
+    const dudas = posts.filter(esDuda);
+    const atendidas = dudas.filter((p) => p.respuestas.length > 0).length;
+    return { valor: atendidas, total: dudas.length, etiqueta: "dudas atendidas" };
+  }
+  const presentados = materias.filter((m) => resultados[m] !== null).length;
+  return { valor: presentados + (diag ? 1 : 0), total: materias.length + 1, etiqueta: "actividades completadas" };
+};
+
+const construirGuias = (m: Materia, arts: Articulo[]): Guia[] => {
+  const preguntas = banco[m].slice(0, 10);
+  const letras = ["A", "B", "C", "D"];
+  return [
+    {
+      id: `${m}-teoria`,
+      titulo: `Guía de teoría de ${m}`,
+      desc: `Resumen de los temas de ${m} para repasar sin conexión.`,
+      secciones:
+        arts.length > 0
+          ? arts.map((a) => ({ encabezado: a.titulo, lineas: a.parrafos }))
+          : [{ encabezado: "Sin contenido", lineas: ["Por ahora no hay artículos publicados en esta materia."] }],
+    },
+    {
+      id: `${m}-practica`,
+      titulo: `Guía de práctica de ${m}`,
+      desc: "10 ejercicios con su clave de respuestas al final.",
+      secciones: [
+        {
+          encabezado: "Ejercicios",
+          lineas: preguntas.map((p, i) => `${i + 1}. ${p.pregunta}  ${p.opciones.map((o, j) => `${letras[j]}) ${o}`).join("   ")}`),
+        },
+        {
+          encabezado: "Clave de respuestas",
+          lineas: preguntas.map((p, i) => `${i + 1}. ${letras[p.correcta]}) ${p.opciones[p.correcta]}. ${p.explicacion}`),
+        },
+      ],
+    },
+  ];
+};
+
+const crearPdf = (titulo: string, bloques: SeccionGuia[]): Blob => {
+  const limpiar = (t: string) =>
+    t
+      .replace(/π/g, "pi")
+      .replace(/−/g, "-")
+      .replace(/[^\x20-\xFF]/g, "?")
+      .replace(/\\/g, "\\\\")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)");
+
+  const envolver = (t: string, max: number) => {
+    const res: string[] = [];
+    let linea = "";
+    t.split(" ").forEach((w) => {
+      if (linea && linea.length + 1 + w.length > max) {
+        res.push(linea);
+        linea = w;
+      } else {
+        linea = linea ? `${linea} ${w}` : w;
+      }
+    });
+    if (linea) res.push(linea);
+    return res;
+  };
+
+  const items: { t: string; f: string; s: number; h: number }[] = [];
+  envolver(titulo, 40).forEach((l) => items.push({ t: l, f: "F2", s: 20, h: 26 }));
+  items.push({ t: "", f: "F1", s: 11, h: 12 });
+  bloques.forEach((b) => {
+    envolver(b.encabezado, 60).forEach((l) => items.push({ t: l, f: "F2", s: 14, h: 20 }));
+    b.lineas.forEach((l) => {
+      envolver(l, 88).forEach((x) => items.push({ t: x, f: "F1", s: 11, h: 15 }));
+      items.push({ t: "", f: "F1", s: 11, h: 6 });
+    });
+    items.push({ t: "", f: "F1", s: 11, h: 8 });
+  });
+
+  const paginas: string[] = [];
+  let cont = "";
+  let y = 790;
+  items.forEach((it) => {
+    if (y - it.h < 56) {
+      paginas.push(cont);
+      cont = "";
+      y = 790;
+    }
+    y -= it.h;
+    if (it.t) cont += `BT /${it.f} ${it.s} Tf 56 ${y} Td (${limpiar(it.t)}) Tj ET\n`;
+  });
+  paginas.push(cont);
+
+  const n = paginas.length;
+  let pdf = "%PDF-1.4\n";
+  const pos: number[] = [];
+  const obj = (id: number, cuerpo: string) => {
+    pos[id] = pdf.length;
+    pdf += `${id} 0 obj\n${cuerpo}\nendobj\n`;
+  };
+  obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  obj(2, `<< /Type /Pages /Kids [${paginas.map((_, i) => `${5 + i * 2} 0 R`).join(" ")}] /Count ${n} >>`);
+  obj(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  obj(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+  paginas.forEach((c, i) => {
+    obj(5 + i * 2, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${6 + i * 2} 0 R >>`);
+    obj(6 + i * 2, `<< /Length ${c.length} >>\nstream\n${c}endstream`);
+  });
+  const total = 5 + n * 2;
+  const inicioXref = pdf.length;
+  pdf += `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) pdf += `${String(pos[i]).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${inicioXref}\n%%EOF`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 255;
+  return new Blob([bytes], { type: "application/pdf" });
+};
+
+const abrirGuia = (g: Guia, descargar: boolean) => {
+  const url = URL.createObjectURL(crearPdf(g.titulo, g.secciones));
+  if (descargar) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${g.titulo.replace(/\s+/g, "-")}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } else {
+    window.open(url, "_blank");
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+
+const trazos: Record<Seccion, string[]> = {
+  inicio: ["M4 4h7v7H4z", "M13 4h7v7h-7z", "M4 13h7v7H4z", "M13 13h7v7h-7z"],
+  videos: ["M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z", "M10 9l5 3-5 3z"],
+  resumenes: ["M4 5c3-1 6-1 8 1 2-2 5-2 8-1v13c-3-1-6-1-8 1-2-2-5-2-8-1z", "M12 6v13"],
+  ejercicios: ["M4 20l1-4L16 5l3 3L8 19z", "M14 7l3 3"],
+  diagnostico: ["M7 4h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M9 3h6v3H9z", "M9 14l2 2 4-4"],
+  guias: ["M7 3h8l4 4v14H7z", "M15 3v4h4", "M12 11v5", "M10 14l2 2 2-2"],
+  foro: ["M4 5h16v11H9l-5 4z"],
+  panel: ["M5 20V10", "M12 20V4", "M19 20v-7"],
+};
+
+function Icono({ nombre }: { nombre: Seccion }) {
   return (
-    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 21c0-4.2 3.6-6.5 8-6.5s8 2.3 8 6.5z" />
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {trazos[nombre].map((d, i) => (
+        <path key={i} d={d} />
+      ))}
     </svg>
   );
 }
 
 function IconoMenu() {
   return (
-    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M4 6h16M4 12h16M4 18h16" />
     </svg>
   );
 }
 
-function Banner({ materia, chico }: { materia: Materia; chico?: boolean }) {
+function IconoFlecha() {
   return (
-    <div className={`banner ${tono[materia]}${chico ? " chico" : ""}`}>
-      <span>{materia}</span>
-    </div>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 17L17 7M9 7h8v8" />
+    </svg>
   );
 }
 
+function IconoLibro() {
+  return (
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 5c3-1 6-1 8 1 2-2 5-2 8-1v13c-3-1-6-1-8 1-2-2-5-2-8-1z" />
+      <path d="M12 6v13" />
+    </svg>
+  );
+}
+
+function IconoBuscar() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-4-4" />
+    </svg>
+  );
+}
+
+function IconoCampana() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z" />
+      <path d="M10 21a2 2 0 0 0 4 0" />
+    </svg>
+  );
+}
+
+function IconoSalir() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 4H5v16h4" />
+      <path d="M16 8l4 4-4 4" />
+      <path d="M20 12H9" />
+    </svg>
+  );
+}
+
+function Banner({ materia }: { materia: Materia }) {
+  return <span className={`tag-materia ${tono[materia]}`}>{materia}</span>;
+}
+
 function Barra({ etiqueta, valor, total }: { etiqueta: string; valor: number; total: number }) {
-  const pct = total === 0 ? 0 : Math.round((valor / total) * 100);
+  const pct = pctDe(valor, total);
   return (
     <div className="medida">
       <div className="medida-texto">
@@ -303,6 +576,45 @@ function Barra({ etiqueta, valor, total }: { etiqueta: string; valor: number; to
       <div className="pista">
         <div className="relleno" style={{ width: `${pct}%` }} />
       </div>
+    </div>
+  );
+}
+
+function Medio({ valor, etiqueta }: { valor: number; etiqueta: string }) {
+  return (
+    <div className="medio">
+      <svg viewBox="0 0 200 110" aria-hidden="true">
+        <path d="M20 96 A80 80 0 0 1 180 96" pathLength={100} className="medio-fondo" />
+        {valor > 0 && <path d="M20 96 A80 80 0 0 1 180 96" pathLength={100} className="medio-valor" strokeDasharray={`${valor} 100`} />}
+      </svg>
+      <div className="medio-centro">
+        <strong>{valor}%</strong>
+        <small>{etiqueta}</small>
+      </div>
+    </div>
+  );
+}
+
+function Grafica({ grupos, estilos }: { grupos: Grupo[]; estilos: string[] }) {
+  return (
+    <div className="grafica">
+      {grupos.map((g) => (
+        <div className="grupo" key={g.etiqueta}>
+          <div className="grupo-barras">
+            {g.valores.map((v, i) => (
+              <div
+                key={i}
+                className={v === null ? "pilula hueco" : `pilula ${estilos[i]}`}
+                style={{ height: v === null ? "100%" : `${Math.max(v, 8)}%` }}
+                title={v === null ? "Sin presentar" : `${v}%`}
+              >
+                {v !== null && <em>{v}%</em>}
+              </div>
+            ))}
+          </div>
+          <span className="grupo-nombre">{g.etiqueta}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -317,40 +629,312 @@ function Pestanas({ materia, setMateria }: { materia: Materia; setMateria: (m: M
   );
 }
 
-function Inicio({ ir, abrirMateria, articulos }: { ir: (s: Seccion) => void; abrirMateria: (m: Materia) => void; articulos: Articulos }) {
+function InicioSesion({ entrar }: { entrar: (s: Sesion) => void }) {
+  const [nombre, setNombre] = useState("");
+  const [rol, setRol] = useState<Rol>("alumno");
+  const [aviso, setAviso] = useState("");
+
+  const enviar = () => {
+    if (nombre.trim().length < 2) {
+      setAviso("Escribe tu nombre para entrar.");
+      return;
+    }
+    entrar({ rol, nombre: nombre.trim() });
+  };
+
   return (
-    <section>
-      <div className="portada">
-        <h1>Regulariza tus materias a tu ritmo</h1>
-        <p>Videos, resúmenes, ejercicios y un diagnóstico para saber por dónde empezar en matemáticas, español y ciencias.</p>
-        <button className="principal" onClick={() => ir("diagnostico")}>Hacer mi diagnóstico</button>
+    <div className="login-fondo">
+      <div className="login">
+        <div className="login-lado">
+          <span className="marca">
+            <IconoLibro />
+          </span>
+          <h1>Regularización Escolar</h1>
+          <p className="sub">Aprende, practica y mejora en matemáticas, español y ciencias.</p>
+          <ul className="login-puntos">
+            <li>Videos y resúmenes por materia</li>
+            <li>Ejercicios y diagnóstico con tiempo</li>
+            <li>Guías en PDF para estudiar en casa</li>
+            <li>Foro de dudas con tutor</li>
+          </ul>
+        </div>
+
+        <div className="login-form">
+          <h2>Inicia sesión</h2>
+          <p className="sub">Acceso de demostración, no requiere contraseña.</p>
+
+          <label className="campo">
+            Nombre
+            <input
+              autoFocus
+              className={aviso ? "invalido" : ""}
+              value={nombre}
+              onChange={(e) => {
+                setNombre(e.target.value);
+                setAviso("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") enviar();
+              }}
+              placeholder="Escribe tu nombre"
+            />
+          </label>
+
+          <p className="campo-titulo">Entrar como</p>
+          <div className="segmento tres">
+            <button className={rol === "alumno" ? "segmento-op activo" : "segmento-op"} onClick={() => setRol("alumno")}>Alumno</button>
+            <button className={rol === "docente" ? "segmento-op activo" : "segmento-op"} onClick={() => setRol("docente")}>Docente</button>
+            <button className={rol === "familia" ? "segmento-op activo" : "segmento-op"} onClick={() => setRol("familia")}>Familia</button>
+          </div>
+          <p className="rol-desc">{descRol[rol]}</p>
+
+          {aviso && <p className="mal" role="alert">{aviso}</p>}
+          <button className="principal enviar" onClick={enviar}>Entrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({
+  nombre,
+  rol,
+  ir,
+  abrirMateria,
+  articulos,
+  diag,
+  resultados,
+  posts,
+}: {
+  nombre: string;
+  rol: Rol;
+  ir: (s: Seccion) => void;
+  abrirMateria: (m: Materia) => void;
+  articulos: Articulos;
+  diag: Resultado | null;
+  resultados: ResultadosEj;
+  posts: Publicacion[];
+}) {
+  const docente = rol === "docente";
+  const familia = rol === "familia";
+  const totalArticulos = materias.reduce((suma, m) => suma + articulos[m].length, 0);
+  const dudas = posts.filter(esDuda);
+  const atendidas = dudas.filter((p) => p.respuestas.length > 0).length;
+  const sinResponder = dudas.length - atendidas;
+  const misDudas = posts.filter((p) => p.rol === "Familia");
+  const respondidas = misDudas.filter((p) => p.respuestas.length > 0).length;
+  const totalGuias = materias.length * 2;
+  const presentados = materias.filter((m) => resultados[m] !== null).length;
+  const totalDiag = diag ? materias.reduce((suma, m) => suma + diag[m], 0) : 0;
+  const siguiente = siguientePaso(rol, posts, diag, resultados);
+  const progreso = progresoDe(docente, posts, diag, resultados);
+  const pctProgreso = pctDe(progreso.valor, progreso.total);
+
+  const grupos: Grupo[] = materias.map((m) => ({
+    etiqueta: m,
+    valores: [
+      diag ? pctDe(diag[m], PREG_POR_MATERIA) : null,
+      resultados[m] !== null ? pctDe(resultados[m] as number, banco[m].length) : null,
+    ],
+  }));
+
+  const tarjetas: { titulo: string; valor: string; nota: string; destino: Seccion }[] = docente
+    ? [
+        { titulo: "Artículos publicados", valor: `${totalArticulos}`, nota: "En las tres materias", destino: "resumenes" },
+        { titulo: "Dudas sin responder", valor: `${sinResponder}`, nota: sinResponder === 0 ? "Todo al día" : "Esperan tu respuesta", destino: "foro" },
+        { titulo: "Dudas atendidas", valor: `${atendidas}`, nota: `de ${dudas.length} en el foro`, destino: "foro" },
+        { titulo: "Videos disponibles", valor: `${videos.length}`, nota: "Explicaciones por materia", destino: "videos" },
+      ]
+    : familia
+      ? [
+          { titulo: "Actividades completadas", valor: `${progreso.valor} / ${progreso.total}`, nota: "Ejercicios y diagnóstico", destino: "panel" },
+          { titulo: "Diagnóstico", valor: diag ? `${totalDiag}/${diagnostico.length}` : "Pendiente", nota: diag ? "Respuestas correctas" : "Aún sin contestar", destino: "panel" },
+          { titulo: "Guías en PDF", valor: `${totalGuias}`, nota: "Para estudiar en casa", destino: "guias" },
+          { titulo: "Mis dudas", valor: `${misDudas.length}`, nota: `${respondidas} respondidas por el tutor`, destino: "foro" },
+        ]
+      : [
+          { titulo: "Actividades completadas", valor: `${progreso.valor} / ${progreso.total}`, nota: "Ejercicios y diagnóstico", destino: siguiente.destino },
+          { titulo: "Diagnóstico", valor: diag ? `${totalDiag}/${diagnostico.length}` : "Pendiente", nota: diag ? "Respuestas correctas" : "Aún sin contestar", destino: "diagnostico" },
+          { titulo: "Ejercicios", valor: `${presentados} / ${materias.length}`, nota: "Materias presentadas", destino: "ejercicios" },
+          { titulo: "Resúmenes", valor: `${totalArticulos}`, nota: "Artículos para repasar", destino: "resumenes" },
+        ];
+
+  const estadoDe = (p: Publicacion) => {
+    if (p.rol === "Tutor") return { texto: "Aviso", clase: "ok" };
+    if (p.respuestas.length > 0) return { texto: docente ? "Atendida" : "Respondida", clase: "ok" };
+    return { texto: docente ? "Sin responder" : "Pendiente", clase: "pend" };
+  };
+
+  const subtitulo = docente
+    ? "Gestiona los artículos, atiende el foro y revisa el avance del estudiante."
+    : familia
+      ? "Consulta cómo va el estudiante y apóyalo desde casa."
+      : "Practica, mide tu nivel y sigue tu avance en cada materia.";
+
+  return (
+    <section className="dashboard">
+      <div className="dash-cab">
+        <div>
+          <h2>Dashboard</h2>
+          <p className="sub">
+            {saludoDe()}, {nombre}. {subtitulo}
+          </p>
+        </div>
+        <div className="dash-botones">
+          {docente ? (
+            <>
+              <button className="principal" onClick={() => ir("foro")}>Ir al foro</button>
+              <button className="contorno" onClick={() => ir("resumenes")}>Gestionar artículos</button>
+            </>
+          ) : familia ? (
+            <>
+              <button className="principal" onClick={() => ir("panel")}>Ver avance</button>
+              <button className="contorno" onClick={() => ir("foro")}>Escribir una duda</button>
+            </>
+          ) : (
+            <>
+              <button className="principal" onClick={() => ir(siguiente.destino)}>{siguiente.boton}</button>
+              <button className="contorno" onClick={() => ir("panel")}>Ver mi panel</button>
+            </>
+          )}
+        </div>
       </div>
 
-      <h2>Materias</h2>
-      <div className="rejilla">
-        {materias.map((m) => (
-          <div className="tarjeta materia" key={m}>
-            <Banner materia={m} />
-            <div className="info">
-              <h3>{m}</h3>
-              <p className="stats">
-                {videos.filter((v) => v.materia === m).length} videos · {articulos[m].length} resúmenes · {banco[m].length} ejercicios
-              </p>
-              <button className="secundario" onClick={() => abrirMateria(m)}>Iniciar</button>
+      <div className="stats-fila">
+        {tarjetas.map((t, i) => (
+          <div className={i === 0 ? "stat resaltada" : "stat"} key={t.titulo}>
+            <div className="stat-cab">
+              <span>{t.titulo}</span>
+              <button className="flecha-borde" aria-label={`Ir a ${t.titulo}`} onClick={() => ir(t.destino)}>
+                <IconoFlecha />
+              </button>
             </div>
+            <p className="stat-valor">{t.valor}</p>
+            <span className="stat-nota">{t.nota}</span>
           </div>
         ))}
       </div>
 
-      <h2>Herramientas de estudio</h2>
-      <div className="rejilla">
-        {secciones.map((s) => (
-          <div className="tarjeta" key={s.id}>
-            <h3>{s.nombre}</h3>
-            <p>{s.desc}</p>
-            <button className="secundario" onClick={() => ir(s.id)}>Abrir</button>
+      <div className="dash-fila">
+        <div className="tarjeta">
+          <div className="tarjeta-cab">
+            <h3>{docente || familia ? "Avance del estudiante" : "Rendimiento por materia"}</h3>
           </div>
-        ))}
+          <Grafica grupos={grupos} estilos={["azul", "negra"]} />
+          <div className="leyenda">
+            <span><i className="cuadro azul" />Diagnóstico</span>
+            <span><i className="cuadro negra" />Ejercicios</span>
+            <span><i className="cuadro hueco" />Sin presentar</span>
+          </div>
+        </div>
+
+        <div className="tarjeta recordatorio">
+          <div className="tarjeta-cab">
+            <h3>{docente ? "Por atender" : "Siguiente paso"}</h3>
+          </div>
+          <p className="recordatorio-titulo">{siguiente.titulo}</p>
+          <p className="stats">{siguiente.detalle}</p>
+          <div className="continuar-barra">
+            <div className="pista">
+              <div className="relleno" style={{ width: `${siguiente.pct}%` }} />
+            </div>
+            <span className="porcentaje">{siguiente.pct}%</span>
+          </div>
+          <button className="oscuro" onClick={() => ir(siguiente.destino)}>
+            {siguiente.boton}
+            <IconoFlecha />
+          </button>
+        </div>
+
+        <div className="tarjeta">
+          <div className="tarjeta-cab">
+            <h3>Materias</h3>
+          </div>
+          <div className="items">
+            {materias.map((m) => (
+              <button className="fila-item" key={m} onClick={() => abrirMateria(m)}>
+                <span className="fila-icono">{m.charAt(0)}</span>
+                <span className="fila-texto">
+                  <strong>{m}</strong>
+                  <small>
+                    {docente
+                      ? `${articulos[m].length} artículos · ${banco[m].length} ejercicios`
+                      : diag
+                        ? `Nivel ${nivelDe(diag[m])}`
+                        : "Sin diagnóstico"}
+                  </small>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="dash-fila">
+        <div className="tarjeta">
+          <div className="tarjeta-cab">
+            <h3>Foro de dudas</h3>
+            <button className="mini" onClick={() => ir("foro")}>Ver foro</button>
+          </div>
+          {posts.length === 0 && <p className="sub">Aún no hay publicaciones.</p>}
+          <div className="items">
+            {posts.slice(0, 4).map((p) => {
+              const estado = estadoDe(p);
+              return (
+                <button className="fila-item" key={p.id} onClick={() => ir("foro")}>
+                  <span className={p.rol === "Tutor" ? "fila-icono negro" : "fila-icono"}>{p.rol.charAt(0)}</span>
+                  <span className="fila-texto">
+                    <strong>{p.materia}</strong>
+                    <small>{p.texto}</small>
+                  </span>
+                  <span className={`estado ${estado.clase}`}>{estado.texto}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="tarjeta">
+          <div className="tarjeta-cab">
+            <h3>{docente ? "Dudas atendidas" : "Progreso"}</h3>
+          </div>
+          <Medio valor={pctProgreso} etiqueta={progreso.etiqueta} />
+          <div className="leyenda">
+            <span><i className="cuadro azul" />Completado</span>
+            <span><i className="cuadro hueco" />Pendiente</span>
+          </div>
+        </div>
+
+        <div className="tarjeta tarjeta-oscura">
+          {docente ? (
+            <>
+              <div>
+                <h3>Artículos publicados</h3>
+                <p className="gran">{totalArticulos}</p>
+                <p className="stats">Material de apoyo en las tres materias</p>
+              </div>
+              <button className="blanco" onClick={() => ir("resumenes")}>Publicar artículo</button>
+            </>
+          ) : familia ? (
+            <>
+              <div>
+                <h3>Guías en PDF</h3>
+                <p className="gran">{totalGuias}</p>
+                <p className="stats">Teoría y práctica para estudiar en casa</p>
+              </div>
+              <button className="blanco" onClick={() => ir("guias")}>Ver guías</button>
+            </>
+          ) : (
+            <>
+              <div>
+                <h3>Examen diagnóstico</h3>
+                <p className="gran">{formato(TIEMPO_DIAG_MIN * 60)}</p>
+                <p className="stats">{diagnostico.length} preguntas con tiempo</p>
+              </div>
+              <button className="blanco" onClick={() => ir("diagnostico")}>{diag ? "Ver resultado" : "Comenzar"}</button>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -366,7 +950,7 @@ function Videos({ materia, setMateria }: { materia: Materia; setMateria: (m: Mat
       <div className="rejilla">
         {lista.map((v) => (
           <div className="tarjeta materia" key={v.titulo}>
-            <Banner materia={v.materia} chico />
+            <Banner materia={v.materia} />
             <div className="info">
               <h3>{v.titulo}</h3>
               {v.url ? (
@@ -387,11 +971,15 @@ function Resumenes({
   setMateria,
   articulos,
   setArticulos,
+  gestion,
+  notificar,
 }: {
   materia: Materia;
   setMateria: (m: Materia) => void;
   articulos: Articulos;
   setArticulos: (a: Articulos) => void;
+  gestion: boolean;
+  notificar: (para: Rol[], texto: string, destino: Seccion) => void;
 }) {
   const [titulo, setTitulo] = useState("");
   const [texto, setTexto] = useState("");
@@ -412,6 +1000,8 @@ function Resumenes({
     if (pendiente.tipo === "publicar") {
       const nuevo: Articulo = { titulo: titulo.trim(), parrafos: texto.trim().split(/\n+/) };
       setArticulos({ ...articulos, [materia]: [...articulos[materia], nuevo] });
+      notificar(["alumno"], `Nuevo artículo en ${materia}: ${nuevo.titulo}`, "resumenes");
+      notificar(["familia"], `La guía de teoría de ${materia} tiene contenido nuevo`, "guias");
       setTitulo("");
       setTexto("");
     } else {
@@ -425,7 +1015,11 @@ function Resumenes({
   return (
     <section>
       <h2>Resúmenes de apoyo</h2>
-      <p className="sub">Repasa la teoría de cada tema antes de practicar.</p>
+      <p className="sub">
+        {gestion
+          ? "Revisa, publica o da de baja los artículos de apoyo de cada materia."
+          : "Repasa la teoría de cada tema antes de practicar."}
+      </p>
       <Pestanas materia={materia} setMateria={setMateria} />
 
       {articulos[materia].length === 0 && <p className="sub">No hay artículos publicados en esta materia.</p>}
@@ -436,19 +1030,23 @@ function Resumenes({
           {r.parrafos.map((p, k) => (
             <p key={k}>{p}</p>
           ))}
-          <button className="peligro" onClick={() => setPendiente({ tipo: "baja", indice: i })}>Dar de baja</button>
+          {gestion && (
+            <button className="peligro" onClick={() => setPendiente({ tipo: "baja", indice: i })}>Dar de baja</button>
+          )}
         </div>
       ))}
 
-      <div className="tarjeta">
-        <h3>Publicar un artículo en {materia}</h3>
-        <div className="fila">
-          <input value={titulo} onChange={(e) => setTitulo(e.target.value)} placeholder="Título del artículo" />
+      {gestion && (
+        <div className="tarjeta">
+          <h3>Publicar un artículo en {materia}</h3>
+          <div className="fila">
+            <input value={titulo} onChange={(e) => setTitulo(e.target.value)} placeholder="Título del artículo" />
+          </div>
+          <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="Escribe el contenido del artículo" rows={4} />
+          {aviso && <p className="mal">{aviso}</p>}
+          <button className="principal" onClick={pedirPublicar}>Publicar artículo</button>
         </div>
-        <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="Escribe el contenido del artículo" rows={4} />
-        {aviso && <p className="mal">{aviso}</p>}
-        <button className="principal" onClick={pedirPublicar}>Publicar artículo</button>
-      </div>
+      )}
 
       {pendiente && (
         <div className="modal-fondo">
@@ -468,6 +1066,32 @@ function Resumenes({
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+function Guias({ materia, setMateria, articulos }: { materia: Materia; setMateria: (m: Materia) => void; articulos: Articulos }) {
+  const guias = construirGuias(materia, articulos[materia]);
+  return (
+    <section>
+      <h2>Guías en PDF</h2>
+      <p className="sub">Visualiza o descarga guías por materia para estudiar sin conexión.</p>
+      <Pestanas materia={materia} setMateria={setMateria} />
+      <div className="rejilla">
+        {guias.map((g) => (
+          <div className="tarjeta materia" key={g.id}>
+            <Banner materia={materia} />
+            <div className="info">
+              <h3>{g.titulo}</h3>
+              <p className="stats">{g.desc}</p>
+              <div className="acciones">
+                <button className="principal" onClick={() => abrirGuia(g, false)}>Ver PDF</button>
+                <button className="secundario" onClick={() => abrirGuia(g, true)}>Descargar</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -639,7 +1263,7 @@ function Ejercicios({ resultados, guardar }: { resultados: ResultadosEj; guardar
     <section>
       <h2>Resultado de {materia}</h2>
       <div className="tarjeta materia">
-        <Banner materia={materia} chico />
+        <Banner materia={materia} />
         <div className="info">
           <p className="puntaje">{aciertos} de {total}</p>
           <p className="stats">aciertos ({pct}%)</p>
@@ -681,7 +1305,7 @@ function Ejercicios({ resultados, guardar }: { resultados: ResultadosEj; guardar
 }
 
 function Diagnostico({ diag, setDiag }: { diag: Resultado | null; setDiag: (r: Resultado | null) => void }) {
-  const [fase, setFase] = useState<Fase>("aviso");
+  const [fase, setFase] = useState<Fase>(diag ? "resultado" : "aviso");
   const [elegidas, setElegidas] = useState<Record<number, number>>({});
   const [fin, setFin] = useState(0);
   const [restante, setRestante] = useState(TIEMPO_DIAG_MIN * 60);
@@ -741,7 +1365,7 @@ function Diagnostico({ diag, setDiag }: { diag: Resultado | null; setDiag: (r: R
         <div className="rejilla">
           {materias.map((m) => (
             <div className="tarjeta materia" key={m}>
-              <Banner materia={m} chico />
+              <Banner materia={m} />
               <div className="info">
                 <h3>{nivelDe(diag[m])}</h3>
                 <p>{diag[m]} de {PREG_POR_MATERIA} respuestas correctas</p>
@@ -837,14 +1461,26 @@ function Diagnostico({ diag, setDiag }: { diag: Resultado | null; setDiag: (r: R
   );
 }
 
-function Avance({ resultados, diag }: { resultados: ResultadosEj; diag: Resultado | null }) {
+function Avance({ resultados, diag, modo }: { resultados: ResultadosEj; diag: Resultado | null; modo: Rol }) {
   const totalDiag = diag ? materias.reduce((suma, m) => suma + diag[m], 0) : 0;
   const presentados = materias.filter((m) => resultados[m] !== null).length;
 
+  const titulos: Record<Rol, string> = {
+    docente: "Avance del estudiante",
+    familia: "Avance del estudiante",
+    alumno: "Mi avance",
+  };
+
+  const textos: Record<Rol, string> = {
+    docente: "Resultados más recientes del estudiante en el diagnóstico y los ejercicios.",
+    familia: "Así va el estudiante en cada materia para que puedas apoyarlo desde casa.",
+    alumno: "Resumen de tu diagnóstico y tus ejercicios en cada materia.",
+  };
+
   return (
     <div>
-      <h2>Mi avance</h2>
-      <p className="sub">Resumen para que la familia vea cómo va el estudiante en cada materia.</p>
+      <h2>{titulos[modo]}</h2>
+      <p className="sub">{textos[modo]}</p>
 
       <div className="tarjeta destacada">
         <h3>Resumen general</h3>
@@ -859,7 +1495,7 @@ function Avance({ resultados, diag }: { resultados: ResultadosEj; diag: Resultad
       <div className="rejilla">
         {materias.map((m) => (
           <div className="tarjeta materia" key={m}>
-            <Banner materia={m} chico />
+            <Banner materia={m} />
             <div className="info">
               {diag ? (
                 <>
@@ -882,13 +1518,26 @@ function Avance({ resultados, diag }: { resultados: ResultadosEj; diag: Resultad
   );
 }
 
-function Foro({ posts, setPosts }: { posts: Publicacion[]; setPosts: (p: Publicacion[]) => void }) {
+function Foro({
+  posts,
+  setPosts,
+  rol,
+  notificar,
+}: {
+  posts: Publicacion[];
+  setPosts: (p: Publicacion[]) => void;
+  rol: Rol;
+  notificar: (para: Rol[], texto: string, destino: Seccion) => void;
+}) {
   const [materia, setMateria] = useState<Materia>("Matemáticas");
-  const [rol, setRol] = useState("Estudiante");
   const [texto, setTexto] = useState("");
   const [aviso, setAviso] = useState("");
   const [borradores, setBorradores] = useState<Record<number, string>>({});
+  const [errorRespuesta, setErrorRespuesta] = useState<{ id: number; texto: string } | null>(null);
   const [filtro, setFiltro] = useState<Materia | "Todas">("Todas");
+
+  const docente = rol === "docente";
+  const rolForo = docente ? "Tutor" : rol === "familia" ? "Familia" : "Estudiante";
 
   const publicar = () => {
     const problema = moderar(texto);
@@ -896,7 +1545,12 @@ function Foro({ posts, setPosts }: { posts: Publicacion[]; setPosts: (p: Publica
       setAviso(problema);
       return;
     }
-    setPosts([{ id: Date.now(), materia, rol, texto: texto.trim(), respuestas: [] }, ...posts]);
+    setPosts([{ id: Date.now(), materia, rol: rolForo, texto: texto.trim(), respuestas: [] }, ...posts]);
+    if (docente) {
+      notificar(["alumno", "familia"], `El tutor publicó un aviso en ${materia}`, "foro");
+    } else {
+      notificar(["docente"], `Nueva duda de ${rol === "familia" ? "una familia" : "un estudiante"} en ${materia}`, "foro");
+    }
     setTexto("");
     setAviso("");
   };
@@ -905,20 +1559,33 @@ function Foro({ posts, setPosts }: { posts: Publicacion[]; setPosts: (p: Publica
     const t = (borradores[id] ?? "").trim();
     const problema = moderar(t);
     if (problema) {
-      setAviso(problema);
+      setErrorRespuesta({ id, texto: problema });
       return;
     }
-    setPosts(posts.map((p) => (p.id === id ? { ...p, respuestas: [...p.respuestas, { rol, texto: t }] } : p)));
+    const publicacion = posts.find((p) => p.id === id);
+    setPosts(posts.map((p) => (p.id === id ? { ...p, respuestas: [...p.respuestas, { rol: "Tutor", texto: t }] } : p)));
+    if (publicacion) {
+      const destinatario: Rol = publicacion.rol === "Familia" ? "familia" : "alumno";
+      notificar([destinatario], `El tutor respondió tu duda de ${publicacion.materia}`, "foro");
+    }
     setBorradores({ ...borradores, [id]: "" });
-    setAviso("");
+    setErrorRespuesta(null);
   };
 
   const visibles = posts.filter((p) => filtro === "Todas" || p.materia === filtro);
 
+  const subtitulo = docente
+    ? "Responde las dudas de estudiantes y familias y publica avisos por materia."
+    : rol === "familia"
+      ? "Escribe tus dudas por materia y un tutor te responderá."
+      : "Publica tu duda por materia y un tutor podrá responderte.";
+
+  const placeholder = docente ? "Escribe un aviso para el grupo" : rol === "familia" ? "Escribe tu duda para el tutor" : "Escribe tu duda";
+
   return (
     <section>
       <h2>Foro de dudas</h2>
-      <p className="sub">Publica tu duda por materia y un tutor podrá responderte.</p>
+      <p className="sub">{subtitulo}</p>
       <div className="tarjeta">
         <div className="fila">
           <select value={materia} onChange={(e) => setMateria(e.target.value as Materia)}>
@@ -926,12 +1593,8 @@ function Foro({ posts, setPosts }: { posts: Publicacion[]; setPosts: (p: Publica
               <option key={m}>{m}</option>
             ))}
           </select>
-          <select value={rol} onChange={(e) => setRol(e.target.value)}>
-            <option>Estudiante</option>
-            <option>Tutor</option>
-          </select>
         </div>
-        <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="Escribe tu duda" rows={3} />
+        <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder={placeholder} rows={3} />
         {aviso && <p className="mal">{aviso}</p>}
         <button className="principal" onClick={publicar}>Publicar</button>
       </div>
@@ -940,18 +1603,25 @@ function Foro({ posts, setPosts }: { posts: Publicacion[]; setPosts: (p: Publica
           <button key={m} className={m === filtro ? "pestana activa" : "pestana"} onClick={() => setFiltro(m)}>{m}</button>
         ))}
       </div>
+      {visibles.length === 0 && <p className="sub">No hay publicaciones en esta materia.</p>}
       {visibles.map((p) => (
         <div className="tarjeta" key={p.id}>
           <span className="etiqueta">{p.materia}</span>
-          <p><strong>{p.rol}</strong> pregunta o comenta</p>
+          <p><strong>{p.rol}</strong> {p.rol === "Tutor" ? "publica un aviso" : "pregunta o comenta"}</p>
           <p>{p.texto}</p>
           {p.respuestas.map((r, i) => (
             <p className="respuesta" key={i}><strong>{r.rol}</strong> responde. {r.texto}</p>
           ))}
-          <div className="fila">
-            <input value={borradores[p.id] ?? ""} onChange={(e) => setBorradores({ ...borradores, [p.id]: e.target.value })} placeholder="Escribe una respuesta" />
-            <button className="secundario" onClick={() => responder(p.id)}>Responder</button>
-          </div>
+          {!docente && p.rol !== "Tutor" && p.respuestas.length === 0 && <p className="sub">Esperando respuesta del tutor.</p>}
+          {docente && p.rol !== "Tutor" && (
+            <>
+              <div className="fila">
+                <input value={borradores[p.id] ?? ""} onChange={(e) => setBorradores({ ...borradores, [p.id]: e.target.value })} placeholder="Escribe una respuesta" />
+                <button className="secundario" onClick={() => responder(p.id)}>Responder</button>
+              </div>
+              {errorRespuesta && errorRespuesta.id === p.id && <p className="mal">{errorRespuesta.texto}</p>}
+            </>
+          )}
         </div>
       ))}
     </section>
@@ -986,7 +1656,7 @@ function Plan({ diag, ir }: { diag: Resultado | null; ir: (s: Seccion) => void }
           const nivel = nivelDe(diag[m]);
           return (
             <div className="tarjeta materia" key={m}>
-              <Banner materia={m} chico />
+              <Banner materia={m} />
               <div className="info">
                 <h3>Nivel {nivel}</h3>
                 <p>{consejo[nivel]}</p>
@@ -1002,22 +1672,116 @@ function Plan({ diag, ir }: { diag: Resultado | null; ir: (s: Seccion) => void }
   );
 }
 
-function Panel({ resultados, diag, ir }: { resultados: ResultadosEj; diag: Resultado | null; ir: (s: Seccion) => void }) {
+function Panel({
+  nombre,
+  resultados,
+  diag,
+  ir,
+}: {
+  nombre: string;
+  resultados: ResultadosEj;
+  diag: Resultado | null;
+  ir: (s: Seccion) => void;
+}) {
   return (
     <section>
       <div className="portada">
-        <h1>Bienvenido, alumno/a</h1>
+        <h1>Bienvenido, {nombre}</h1>
         <p>Aquí puedes ver tu avance en cada materia y el plan de estudio que te recomendamos.</p>
       </div>
-      <Avance resultados={resultados} diag={diag} />
+      <Avance resultados={resultados} diag={diag} modo="alumno" />
       <Plan diag={diag} ir={ir} />
     </section>
   );
 }
 
+function PanelFamilia({
+  nombre,
+  resultados,
+  diag,
+  ir,
+}: {
+  nombre: string;
+  resultados: ResultadosEj;
+  diag: Resultado | null;
+  ir: (s: Seccion) => void;
+}) {
+  const primera = diag ? [...materias].sort((a, b) => diag[a] - diag[b])[0] : null;
+  const nivel = diag && primera ? nivelDe(diag[primera]) : null;
+
+  return (
+    <section>
+      <div className="portada">
+        <h1>Bienvenido, {nombre}</h1>
+        <p>Aquí puedes ver cómo va el estudiante en cada materia, descargar guías para estudiar en casa y escribir tus dudas al tutor.</p>
+      </div>
+
+      <Avance resultados={resultados} diag={diag} modo="familia" />
+
+      <div className="tarjeta destacada">
+        <h3>Dónde apoyar primero</h3>
+        {diag && primera && nivel ? (
+          <p>Conviene reforzar {primera}, donde el nivel actual es {nivel}. {consejo[nivel]}</p>
+        ) : (
+          <p>Cuando el estudiante conteste el examen diagnóstico aquí aparecerá la materia que más necesita apoyo.</p>
+        )}
+        <div className="acciones">
+          <button className="principal" onClick={() => ir("guias")}>Ver guías</button>
+          <button className="secundario" onClick={() => ir("foro")}>Escribir una duda</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PanelDocente({
+  nombre,
+  resultados,
+  diag,
+  articulos,
+  posts,
+  ir,
+}: {
+  nombre: string;
+  resultados: ResultadosEj;
+  diag: Resultado | null;
+  articulos: Articulos;
+  posts: Publicacion[];
+  ir: (s: Seccion) => void;
+}) {
+  const totalArticulos = materias.reduce((suma, m) => suma + articulos[m].length, 0);
+  const sinResponder = posts.filter((p) => esDuda(p) && p.respuestas.length === 0).length;
+
+  return (
+    <section>
+      <div className="portada">
+        <h1>Bienvenido, {nombre}</h1>
+        <p>Desde aquí puedes revisar el avance del estudiante, gestionar los artículos de apoyo y atender las dudas del foro.</p>
+      </div>
+
+      <div className="rejilla">
+        <div className="tarjeta destacada">
+          <h3>Artículos publicados</h3>
+          <p className="puntaje">{totalArticulos}</p>
+          <button className="secundario" onClick={() => ir("resumenes")}>Gestionar artículos</button>
+        </div>
+        <div className="tarjeta destacada">
+          <h3>Dudas sin responder</h3>
+          <p className="puntaje">{sinResponder}</p>
+          <button className="secundario" onClick={() => ir("foro")}>Ir al foro</button>
+        </div>
+      </div>
+
+      <Avance resultados={resultados} diag={diag} modo="docente" />
+    </section>
+  );
+}
+
 export default function App() {
+  const [sesion, setSesion] = useState<Sesion | null>(null);
   const [seccion, setSeccion] = useState<Seccion>("inicio");
   const [menuAbierto, setMenuAbierto] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
   const [materiaSel, setMateriaSel] = useState<Materia>("Matemáticas");
   const [resultadosEj, setResultadosEj] = useState<ResultadosEj>({ Matemáticas: null, Español: null, Ciencias: null });
   const [diag, setDiag] = useState<Resultado | null>(null);
@@ -1025,8 +1789,25 @@ export default function App() {
   const [posts, setPosts] = useState<Publicacion[]>([
     { id: 1, materia: "Matemáticas", rol: "Tutor", texto: "Bienvenidos al foro. Publiquen aquí sus dudas de cada materia.", respuestas: [] },
   ]);
+  const [notificaciones, setNotificaciones] = useState<Notificacion[]>([]);
+  const [notiAbierto, setNotiAbierto] = useState(false);
+  const idNoti = useRef(1);
 
-  const guardarResultado = (m: Materia, n: number) => setResultadosEj((r) => ({ ...r, [m]: n }));
+  const notificar = (para: Rol[], texto: string, destino: Seccion) => {
+    const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+    const nuevas: Notificacion[] = para.map((r) => ({ id: idNoti.current++, para: r, texto, destino, hora, leida: false }));
+    setNotificaciones((n) => [...nuevas, ...n].slice(0, 40));
+  };
+
+  const guardarResultado = (m: Materia, n: number) => {
+    setResultadosEj((r) => ({ ...r, [m]: n }));
+    notificar(["familia", "docente"], `El estudiante terminó los ejercicios de ${m}: ${n} de ${banco[m].length} aciertos`, "panel");
+  };
+
+  const guardarDiag = (r: Resultado | null) => {
+    setDiag(r);
+    if (r) notificar(["familia", "docente"], "El estudiante terminó el examen diagnóstico", "panel");
+  };
 
   const ir = (s: Seccion) => {
     setSeccion(s);
@@ -1036,49 +1817,234 @@ export default function App() {
 
   const abrirMateria = (m: Materia) => {
     setMateriaSel(m);
-    ir("resumenes");
+    ir(sesion?.rol === "familia" ? "guias" : "resumenes");
+  };
+
+  const entrar = (s: Sesion) => {
+    if (s.rol === "docente") {
+      const pendientes = posts.filter((p) => esDuda(p) && p.respuestas.length === 0).length;
+      if (pendientes > 0) notificar(["docente"], `Tienes ${pendientes} dudas sin responder en el foro`, "foro");
+    } else {
+      const propio = s.rol === "familia" ? "Familia" : "Estudiante";
+      const respondidas = posts.filter((p) => p.rol === propio && p.respuestas.length > 0).length;
+      if (respondidas > 0) notificar([s.rol], `Tienes ${respondidas} dudas con respuesta del tutor`, "foro");
+    }
+    notificar([s.rol], `Iniciaste sesión como ${s.nombre}`, "inicio");
+    setSesion(s);
+    setSeccion("inicio");
+    setMenuAbierto(false);
+    setNotiAbierto(false);
+    window.scrollTo(0, 0);
+  };
+
+  const salir = () => {
+    setSesion(null);
+    setSeccion("inicio");
+    setMenuAbierto(false);
+    setNotiAbierto(false);
+    setBusqueda("");
+  };
+
+  if (!sesion) {
+    return <InicioSesion entrar={entrar} />;
+  }
+
+  const docente = sesion.rol === "docente";
+  const familia = sesion.rol === "familia";
+  const alumno = sesion.rol === "alumno";
+  const nombrePanel = docente ? "Panel docente" : familia ? "Panel familiar" : "Mi panel";
+
+  const menuPrincipal: { id: Seccion; nombre: string }[] = [
+    { id: "inicio", nombre: "Dashboard" },
+    ...secciones.filter((s) => permitidas[sesion.rol].includes(s.id)).map((s) => ({ id: s.id, nombre: s.nombre })),
+  ];
+
+  const sinResponder = posts.filter((p) => esDuda(p) && p.respuestas.length === 0).length;
+  const progreso = progresoDe(docente, posts, diag, resultadosEj);
+  const pctProgreso = pctDe(progreso.valor, progreso.total);
+
+  const misNotis = notificaciones.filter((n) => n.para === sesion.rol);
+  const sinLeer = misNotis.filter((n) => !n.leida).length;
+
+  const abrirNoti = (n: Notificacion) => {
+    setNotificaciones((l) => l.map((x) => (x.id === n.id ? { ...x, leida: true } : x)));
+    setNotiAbierto(false);
+    ir(n.destino);
+  };
+
+  const leerTodas = () => setNotificaciones((l) => l.map((x) => (x.para === sesion.rol ? { ...x, leida: true } : x)));
+
+  const buscar = () => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return;
+    const todas: { id: Seccion; nombre: string }[] = [...menuPrincipal, { id: "panel", nombre: nombrePanel }];
+    const hallada = todas.find((s) => s.nombre.toLowerCase().includes(q));
+    if (hallada) {
+      ir(hallada.id);
+      setBusqueda("");
+    }
   };
 
   return (
     <div className="app">
-      <header className="barra">
-        <button className="hamburguesa" aria-label="Abrir menú" onClick={() => setMenuAbierto(!menuAbierto)}>
-          <IconoMenu />
+      <aside className={menuAbierto ? "lateral abierto" : "lateral"}>
+        <button className="marca-caja" onClick={() => ir("inicio")}>
+          <span className="marca">
+            <IconoLibro />
+          </span>
+          <span className="marca-texto">
+            <strong>Regularización Escolar</strong>
+            <small>Aprende · Practica · Mejora</small>
+          </span>
         </button>
-        <button className="logo" onClick={() => ir("inicio")}>Regularización Escolar</button>
-        <button className={seccion === "panel" ? "usuario activo" : "usuario"} aria-label="Mi panel" onClick={() => ir("panel")}>
-          <IconoUsuario />
-        </button>
-      </header>
-      <div className="cuerpo">
-        <aside className={menuAbierto ? "lateral abierto" : "lateral"}>
-          <nav>
-            {menu.map((s) => (
-              <button key={s.id} className={seccion === s.id ? "item activo" : "item"} onClick={() => ir(s.id)}>
-                {s.nombre}
+
+        <p className="menu-titulo">MENÚ</p>
+        <nav>
+          {menuPrincipal.map((s) => (
+            <button key={s.id} className={seccion === s.id ? "item activo" : "item"} onClick={() => ir(s.id)}>
+              <Icono nombre={s.id} />
+              <span>{s.nombre}</span>
+              {docente && s.id === "foro" && sinResponder > 0 && <span className="insignia">{sinResponder}</span>}
+            </button>
+          ))}
+        </nav>
+
+        <p className="menu-titulo">GENERAL</p>
+        <nav>
+          <button className={seccion === "panel" ? "item activo" : "item"} onClick={() => ir("panel")}>
+            <Icono nombre="panel" />
+            <span>{nombrePanel}</span>
+          </button>
+          <button className="item" onClick={salir}>
+            <IconoSalir />
+            <span>Cerrar sesión</span>
+          </button>
+        </nav>
+
+        <div className="promo">
+          <p className="promo-titulo">{docente ? "Atención del foro" : familia ? "Avance del estudiante" : "Tu avance"}</p>
+          <p className="promo-valor">{progreso.valor} / {progreso.total}</p>
+          <p className="promo-nota">{progreso.etiqueta}</p>
+          <div className="pista">
+            <div className="relleno" style={{ width: `${pctProgreso}%` }} />
+          </div>
+        </div>
+      </aside>
+
+      {menuAbierto && <div className="velo" onClick={() => setMenuAbierto(false)} />}
+
+      <div className="contenido">
+        <header className="barra">
+          <button className="hamburguesa" aria-label="Abrir menú" onClick={() => setMenuAbierto(!menuAbierto)}>
+            <IconoMenu />
+          </button>
+          <div className="buscador">
+            <IconoBuscar />
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") buscar();
+              }}
+              placeholder="Buscar sección"
+            />
+          </div>
+          <div className="barra-der">
+            <div className="notificaciones">
+              <button className="icono-boton" aria-label="Notificaciones" onClick={() => setNotiAbierto(!notiAbierto)}>
+                <IconoCampana />
+                {sinLeer > 0 && <span className="insignia">{sinLeer > 9 ? "9+" : sinLeer}</span>}
               </button>
-            ))}
-          </nav>
-        </aside>
-        {menuAbierto && <div className="velo" onClick={() => setMenuAbierto(false)} />}
+              {notiAbierto && (
+                <>
+                  <div className="noti-velo" onClick={() => setNotiAbierto(false)} />
+                  <div className="noti-panel">
+                    <div className="noti-cab">
+                      <h3>Notificaciones</h3>
+                      {sinLeer > 0 && <button className="mini" onClick={leerTodas}>Marcar como leídas</button>}
+                    </div>
+                    {misNotis.length === 0 && <p className="sub">No tienes notificaciones.</p>}
+                    {misNotis.map((n) => (
+                      <button key={n.id} className={n.leida ? "noti-item" : "noti-item nueva"} onClick={() => abrirNoti(n)}>
+                        <span className="noti-punto" />
+                        <span className="noti-texto">
+                          {n.texto}
+                          <small>{n.hora}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="perfil">
+              <span className="avatar">{sesion.nombre.charAt(0).toUpperCase()}</span>
+              <span className="perfil-datos">
+                <strong>{sesion.nombre}</strong>
+                <small>{docente ? "Docente" : familia ? "Familia" : "Alumno"}</small>
+              </span>
+            </div>
+          </div>
+        </header>
+
         <main>
-          {seccion === "inicio" && <Inicio ir={ir} abrirMateria={abrirMateria} articulos={articulos} />}
-          {seccion === "videos" && <Videos materia={materiaSel} setMateria={setMateriaSel} />}
-          {seccion === "resumenes" && <Resumenes materia={materiaSel} setMateria={setMateriaSel} articulos={articulos} setArticulos={setArticulos} />}
-          <div style={{ display: seccion === "ejercicios" ? "block" : "none" }}>
-            <Ejercicios resultados={resultadosEj} guardar={guardarResultado} />
-          </div>
-          <div style={{ display: seccion === "diagnostico" ? "block" : "none" }}>
-            <Diagnostico diag={diag} setDiag={setDiag} />
-          </div>
-          {seccion === "foro" && <Foro posts={posts} setPosts={setPosts} />}
-          {seccion === "panel" && <Panel resultados={resultadosEj} diag={diag} ir={ir} />}
+          {seccion === "inicio" && (
+            <Dashboard
+              nombre={sesion.nombre}
+              rol={sesion.rol}
+              ir={ir}
+              abrirMateria={abrirMateria}
+              articulos={articulos}
+              diag={diag}
+              resultados={resultadosEj}
+              posts={posts}
+            />
+          )}
+          {seccion === "videos" && !familia && <Videos materia={materiaSel} setMateria={setMateriaSel} />}
+          {seccion === "resumenes" && !familia && (
+            <Resumenes
+              materia={materiaSel}
+              setMateria={setMateriaSel}
+              articulos={articulos}
+              setArticulos={setArticulos}
+              gestion={docente}
+              notificar={notificar}
+            />
+          )}
+          {alumno && (
+            <>
+              <div style={{ display: seccion === "ejercicios" ? "block" : "none" }}>
+                <Ejercicios resultados={resultadosEj} guardar={guardarResultado} />
+              </div>
+              <div style={{ display: seccion === "diagnostico" ? "block" : "none" }}>
+                <Diagnostico diag={diag} setDiag={guardarDiag} />
+              </div>
+            </>
+          )}
+          {seccion === "guias" && <Guias materia={materiaSel} setMateria={setMateriaSel} articulos={articulos} />}
+          {seccion === "foro" && <Foro posts={posts} setPosts={setPosts} rol={sesion.rol} notificar={notificar} />}
+          {seccion === "panel" &&
+            (docente ? (
+              <PanelDocente
+                nombre={sesion.nombre}
+                resultados={resultadosEj}
+                diag={diag}
+                articulos={articulos}
+                posts={posts}
+                ir={ir}
+              />
+            ) : familia ? (
+              <PanelFamilia nombre={sesion.nombre} resultados={resultadosEj} diag={diag} ir={ir} />
+            ) : (
+              <Panel nombre={sesion.nombre} resultados={resultadosEj} diag={diag} ir={ir} />
+            ))}
         </main>
+
+        <footer className="pie">
+          <p>Sitio Web Educativo de Regularización Escolar</p>
+          <p>Prototipo académico del Proyecto II, Universidad de Guadalajara, 2026</p>
+        </footer>
       </div>
-      <footer className="pie">
-        <p>Sitio Web Educativo de Regularización Escolar</p>
-        <p>Prototipo académico del Proyecto II, Universidad de Guadalajara, 2026</p>
-      </footer>
     </div>
   );
 }
