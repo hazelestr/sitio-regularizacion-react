@@ -1645,3 +1645,12 @@ textarea {
     padding: 8px 0;
   }
 }
+.enlace {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--azul);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
