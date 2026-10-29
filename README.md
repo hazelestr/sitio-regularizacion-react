@@ -1,32 +1,28 @@
-# React + TypeScript + Vite
+# Sitio Web Educativo de Regularización Escolar
+Prototipo académico del Proyecto II (Licenciatura en Desarrollo de Sistemas Web, CUCEI, Universidad de Guadalajara, 2026).
+Autora: Hazel Guadalupe Estrada Araiza. Asesor: Jose Martin Valencia Villalvazo.
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## Qué hace
+Sitio para practicar matemáticas, español y ciencias: videos de YouTube, resúmenes, ejercicios con cronómetro, examen diagnóstico, guías en PDF, foro de dudas con tutor, plan personalizado, paneles de avance y notificaciones.
 
-Currently, two official plugins are available:
+## Roles
+- Administrador: crea y elimina cuentas y publica o da de baja artículos.
+- Docente: responde dudas, publica avisos y revisa el avance.
+- Alumno: estudia, practica y consulta su plan.
+- Familia: ve el avance de su alumno y escribe dudas.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Tecnologías
+React, TypeScript y Vite.
 
-## React Compiler
+## Cómo ejecutarlo
+npm install
+npm run dev
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Estructura (carpeta src)
+- App.tsx: secciones y lógica del sitio.
+- Cuentas.tsx: gestión de cuentas y panel del administrador.
+- almacen.ts: guardado local y contraseñas con hash.
+- App.css: estilos y diseño adaptable.
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Limitaciones
+Sin base de datos compartida: los datos se guardan en el navegador. Los videos dependen de YouTube.
