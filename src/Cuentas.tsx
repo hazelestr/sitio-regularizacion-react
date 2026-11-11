@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { crearCuenta, usuarioValido, type Cuenta, type Rol } from "./almacen";
 
+type CambiarCuentas = (f: (c: Cuenta[]) => Cuenta[]) => void;
+
 const nombreRol: Record<Rol, string> = {
   admin: "Administrador",
   docente: "Docente",
@@ -16,7 +18,7 @@ export function GestionCuentas({
   yo,
 }: {
   cuentas: Cuenta[];
-  setCuentas: (c: Cuenta[]) => void;
+  setCuentas: CambiarCuentas;
   yo: string;
 }) {
   const [usuario, setUsuario] = useState("");
@@ -56,7 +58,7 @@ export function GestionCuentas({
     }
     setOcupado(true);
     const nueva = await crearCuenta(u, nombre.trim(), clave, rol, rol === "familia" ? a : undefined);
-    setCuentas([...cuentas, nueva]);
+    setCuentas((c) => (c.some((x) => x.usuario === nueva.usuario) ? c : [...c, nueva]));
     setUsuario("");
     setNombre("");
     setClave("");
@@ -67,7 +69,8 @@ export function GestionCuentas({
 
   const borrar = () => {
     if (!porBorrar) return;
-    setCuentas(cuentas.filter((c) => c.usuario !== porBorrar.usuario));
+    const u = porBorrar.usuario;
+    setCuentas((c) => c.filter((x) => x.usuario !== u));
     setPorBorrar(null);
   };
 
@@ -145,7 +148,7 @@ export function VincularAlumno({
 }: {
   cuentas: Cuenta[];
   yo: string;
-  setCuentas: (c: Cuenta[]) => void;
+  setCuentas: CambiarCuentas;
 }) {
   const [alumno, setAlumno] = useState("");
   const [aviso, setAviso] = useState("");
@@ -156,7 +159,7 @@ export function VincularAlumno({
       setAviso("No existe un alumno con ese usuario. Pídele al alumno que se registre primero.");
       return;
     }
-    setCuentas(cuentas.map((c) => (c.usuario === yo ? { ...c, alumno: a } : c)));
+    setCuentas((c) => c.map((x) => (x.usuario === yo ? { ...x, alumno: a } : x)));
   };
 
   return (

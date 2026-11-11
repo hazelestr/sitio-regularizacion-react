@@ -1501,6 +1501,48 @@ textarea {
   margin: 4px 0;
 }
 
+.enlace {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--azul);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Plan de estudio: pasos con casilla */
+.paso {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.paso input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  accent-color: var(--azul);
+  cursor: pointer;
+}
+
+.paso input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+.paso-texto {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+}
+
+.paso-texto.hecho {
+  color: var(--suave);
+  text-decoration: line-through;
+}
+
 @media (max-width: 1200px) {
   .stats-fila {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1512,6 +1554,21 @@ textarea {
 
   .dash-fila > :first-child {
     grid-column: 1 / -1;
+  }
+}
+
+/* Tablet horizontal: menú lateral más angosto */
+@media (min-width: 901px) and (max-width: 1100px) {
+  .lateral {
+    width: 220px;
+  }
+
+  .stat-valor {
+    font-size: 2.1rem;
+  }
+
+  .perfil-datos {
+    display: none;
   }
 }
 
@@ -1645,12 +1702,18 @@ textarea {
     padding: 8px 0;
   }
 }
-.enlace {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--azul);
-  font-weight: 700;
-  text-decoration: underline;
-  cursor: pointer;
+
+/* Tablet vertical: dos columnas en vez de una */
+@media (min-width: 601px) and (max-width: 900px) {
+  .stats-fila {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-fila {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-fila > :first-child {
+    grid-column: 1 / -1;
+  }
 }

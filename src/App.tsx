@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as TeclaEvento } from "react";
 import "./App.css";
 import { crearCuenta, leer, escribir, usuarioValido, verificar, type Cuenta, type Rol } from "./almacen";
+import { useNube } from "./nube";
 import { GestionCuentas, PanelAdmin, VincularAlumno } from "./Cuentas";
 
 type Materia = "Matemáticas" | "Español" | "Ciencias";
@@ -8,7 +9,7 @@ type Seccion = "inicio" | "videos" | "resumenes" | "ejercicios" | "diagnostico" 
 type Nivel = "Básico" | "Intermedio" | "Avanzado";
 type Pregunta = { pregunta: string; opciones: string[]; correcta: number; explicacion: string };
 type PreguntaDiag = { materia: Materia; pregunta: string; opciones: string[]; correcta: number };
-type Respuesta = { nombre: string; texto: string };
+type Respuesta = { nombre: string; texto: string; fecha?: string };
 type Publicacion = {
   id: number;
   materia: Materia;
@@ -17,11 +18,12 @@ type Publicacion = {
   nombre: string;
   grupo: string;
   texto: string;
+  fecha?: string;
   respuestas: Respuesta[];
 };
 type Resultado = Record<Materia, number>;
 type ResultadosEj = Record<Materia, number | null>;
-type DatosAlumno = { diag: Resultado | null; resultados: ResultadosEj };
+type DatosAlumno = { diag: Resultado | null; resultados: ResultadosEj; pasos?: Record<string, boolean> };
 type Fase = "elegir" | "aviso" | "examen" | "resultado";
 type Articulo = { titulo: string; parrafos: string[] };
 type Articulos = Record<Materia, Articulo[]>;
@@ -688,7 +690,7 @@ function InicioSesion({
   entrar,
 }: {
   cuentas: Cuenta[];
-  setCuentas: (c: Cuenta[]) => void;
+  setCuentas: (f: (c: Cuenta[]) => Cuenta[]) => void;
   entrar: (s: Sesion) => void;
 }) {
   const primera = !cuentas.some((c) => c.rol === "admin");
@@ -744,7 +746,7 @@ function InicioSesion({
       }
       setOcupado(true);
       const cuenta = await crearCuenta(u, nombre.trim(), clave, primera ? "admin" : rol, esFamilia ? a : undefined);
-      setCuentas([...cuentas, cuenta]);
+      setCuentas((c) => (c.some((x) => x.usuario === cuenta.usuario) ? c : [...c, cuenta]));
       entrar({ rol: cuenta.rol, nombre: cuenta.nombre, usuario: cuenta.usuario });
       return;
     }
@@ -1204,7 +1206,7 @@ function Resumenes({
   materia: Materia;
   setMateria: (m: Materia) => void;
   articulos: Articulos;
-  setArticulos: (a: Articulos) => void;
+  setArticulos: (f: (a: Articulos) => Articulos) => void;
   gestion: boolean;
   notificar: Notificar;
   sugerirDiag: boolean;
@@ -1228,13 +1230,14 @@ function Resumenes({
     if (!pendiente) return;
     if (pendiente.tipo === "publicar") {
       const nuevo: Articulo = { titulo: titulo.trim(), parrafos: texto.trim().split(/\n+/) };
-      setArticulos({ ...articulos, [materia]: [...articulos[materia], nuevo] });
+      setArticulos((a) => ({ ...a, [materia]: [...a[materia], nuevo] }));
       notificar({ roles: ["alumno"] }, `Nuevo artículo en ${materia}: ${nuevo.titulo}`, "resumenes");
       notificar({ roles: ["familia"] }, `La guía de teoría de ${materia} tiene contenido nuevo`, "guias");
       setTitulo("");
       setTexto("");
     } else {
-      setArticulos({ ...articulos, [materia]: articulos[materia].filter((_, i) => i !== pendiente.indice) });
+      const indice = pendiente.indice;
+      setArticulos((a) => ({ ...a, [materia]: a[materia].filter((_, i) => i !== indice) }));
     }
     setPendiente(null);
   };
@@ -1831,10 +1834,13 @@ function Foro({
   const [borradores, setBorradores] = useState<Record<number, string>>({});
   const [errorRespuesta, setErrorRespuesta] = useState<{ id: number; texto: string } | null>(null);
   const [filtro, setFiltro] = useState<Materia | "Todas">("Todas");
+  const [porEliminar, setPorEliminar] = useState<Publicacion | null>(null);
 
   const rol = sesion.rol;
   const docente = rol === "docente";
   const rolForo = docente ? "Tutor" : rol === "familia" ? "Familia" : "Estudiante";
+
+  const ahora = () => new Date().toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
 
   const publicar = () => {
     const problema = moderar(texto);
@@ -1850,6 +1856,7 @@ function Foro({
       nombre: sesion.nombre,
       grupo: docente ? "*" : grupo,
       texto: texto.trim(),
+      fecha: ahora(),
       respuestas: [],
     };
     setPosts((l) => [nueva, ...l]);
@@ -1870,7 +1877,9 @@ function Foro({
       return;
     }
     const publicacion = posts.find((p) => p.id === id);
-    setPosts((l) => l.map((p) => (p.id === id ? { ...p, respuestas: [...p.respuestas, { nombre: sesion.nombre, texto: t }] } : p)));
+    setPosts((l) =>
+      l.map((p) => (p.id === id ? { ...p, respuestas: [...p.respuestas, { nombre: sesion.nombre, texto: t, fecha: ahora() }] } : p))
+    );
     if (publicacion) {
       const miembros = cuentas.filter((c) => c.usuario === publicacion.grupo || c.alumno === publicacion.grupo).map((c) => c.usuario);
       notificar({ usuarios: [publicacion.autor, ...miembros] }, `El tutor respondió la duda de ${publicacion.nombre} en ${publicacion.materia}`, "foro");
@@ -1878,6 +1887,15 @@ function Foro({
     setBorradores({ ...borradores, [id]: "" });
     setErrorRespuesta(null);
   };
+
+  const eliminar = () => {
+    if (!porEliminar) return;
+    const id = porEliminar.id;
+    setPosts((l) => l.filter((p) => p.id !== id));
+    setPorEliminar(null);
+  };
+
+  const puedeEliminar = (p: Publicacion) => docente || (p.autor !== "" && p.autor === sesion.usuario);
 
   const visibles = posts.filter(
     (p) => (docente || p.grupo === "*" || p.grupo === grupo) && (filtro === "Todas" || p.materia === filtro)
@@ -1904,6 +1922,7 @@ function Foro({
           </select>
         </div>
         <textarea value={texto} onChange={(e) => setTexto(e.target.value)} placeholder={placeholder} rows={3} />
+        <p className="stats">{texto.trim().length} de 500 caracteres</p>
         {aviso && <p className="mal">{aviso}</p>}
         <button className="principal" onClick={publicar}>Publicar</button>
       </div>
@@ -1917,9 +1936,13 @@ function Foro({
         <div className="tarjeta" key={p.id}>
           <span className="etiqueta">{p.materia}</span>
           <p><strong>{p.nombre}</strong> ({p.rol}) {p.rol === "Tutor" ? "publica un aviso" : "pregunta o comenta"}</p>
+          {p.fecha && <p className="stats">{p.fecha}</p>}
           <p>{p.texto}</p>
           {p.respuestas.map((r, i) => (
-            <p className="respuesta" key={i}><strong>Tutor {r.nombre}</strong> responde. {r.texto}</p>
+            <p className="respuesta" key={i}>
+              <strong>Tutor {r.nombre}</strong> responde. {r.texto}
+              {r.fecha && <small className="stats"> · {r.fecha}</small>}
+            </p>
           ))}
           {!docente && p.rol !== "Tutor" && p.respuestas.length === 0 && <p className="sub">Esperando respuesta del tutor.</p>}
           {docente && p.rol !== "Tutor" && (
@@ -1931,13 +1954,39 @@ function Foro({
               {errorRespuesta && errorRespuesta.id === p.id && <p className="mal">{errorRespuesta.texto}</p>}
             </>
           )}
+          {puedeEliminar(p) && <button className="peligro" onClick={() => setPorEliminar(p)}>Eliminar publicación</button>}
         </div>
       ))}
+
+      {porEliminar && (
+        <div className="modal-fondo">
+          <div className="modal">
+            <h3>¿Eliminar la publicación?</h3>
+            <p>Vas a eliminar esta publicación de {porEliminar.nombre} en {porEliminar.materia}. También se borrarán sus respuestas.</p>
+            <div className="acciones">
+              <button className="principal" onClick={eliminar}>Sí, eliminar</button>
+              <button className="secundario" onClick={() => setPorEliminar(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
-function Plan({ diag, ir }: { diag: Resultado | null; ir: Ir }) {
+function Plan({
+  diag,
+  resultados,
+  pasos,
+  marcar,
+  ir,
+}: {
+  diag: Resultado | null;
+  resultados: ResultadosEj;
+  pasos: Record<string, boolean>;
+  marcar: (id: string, hecho: boolean) => void;
+  ir: Ir;
+}) {
   if (!diag) {
     return (
       <div>
@@ -1963,12 +2012,40 @@ function Plan({ diag, ir }: { diag: Resultado | null; ir: Ir }) {
       <div className="rejilla">
         {orden.map((m) => {
           const nivel = nivelDe(diag[m]);
+          const hechoEj = resultados[m] !== null;
+          const tituloVideo = videos.find((v) => v.materia === m)?.titulo ?? "";
+          const lista: { id: string; texto: string; hecho: boolean; automatico: boolean; seccion: Seccion }[] = [
+            { id: `${m}-video`, texto: `Ver el video: ${tituloVideo}`, hecho: pasos[`${m}-video`] === true, automatico: false, seccion: "videos" },
+            { id: `${m}-resumen`, texto: "Leer el resumen del tema", hecho: pasos[`${m}-resumen`] === true, automatico: false, seccion: "resumenes" },
+            {
+              id: `${m}-ejercicios`,
+              texto: hechoEj ? `Ejercicios resueltos: ${resultados[m]} de ${banco[m].length}` : "Resolver los ejercicios",
+              hecho: hechoEj,
+              automatico: true,
+              seccion: "ejercicios",
+            },
+          ];
+          const completados = lista.filter((p) => p.hecho).length;
           return (
             <div className="tarjeta materia" key={m}>
               <Banner materia={m} />
               <div className="info">
                 <h3>Nivel {nivel}</h3>
                 <p>{consejo[nivel]}</p>
+                <Barra etiqueta="Pasos del plan" valor={completados} total={lista.length} />
+                {lista.map((p) => (
+                  <div className="paso" key={p.id}>
+                    <input
+                      type="checkbox"
+                      checked={p.hecho}
+                      disabled={p.automatico}
+                      onChange={(e) => marcar(p.id, e.target.checked)}
+                      aria-label={p.texto}
+                    />
+                    <span className={p.hecho ? "paso-texto hecho" : "paso-texto"}>{p.texto}</span>
+                    <button className="mini" onClick={() => ir(p.seccion, m)}>Ir</button>
+                  </div>
+                ))}
                 <button className="secundario" onClick={() => ir(destino[nivel].seccion, m)}>
                   {destino[nivel].texto}
                 </button>
@@ -1985,11 +2062,15 @@ function Panel({
   nombre,
   resultados,
   diag,
+  pasos,
+  marcarPaso,
   ir,
 }: {
   nombre: string;
   resultados: ResultadosEj;
   diag: Resultado | null;
+  pasos: Record<string, boolean>;
+  marcarPaso: (id: string, hecho: boolean) => void;
   ir: Ir;
 }) {
   return (
@@ -1999,7 +2080,7 @@ function Panel({
         <p>Aquí puedes ver tu avance en cada materia y el plan de estudio que te recomendamos.</p>
       </div>
       <Avance resultados={resultados} diag={diag} modo="alumno" />
-      <Plan diag={diag} ir={ir} />
+      <Plan diag={diag} resultados={resultados} pasos={pasos} marcar={marcarPaso} ir={ir} />
     </section>
   );
 }
@@ -2045,6 +2126,45 @@ function PanelFamilia({
   );
 }
 
+function ResumenGrupo({
+  alumnos,
+  datos,
+  seleccionar,
+}: {
+  alumnos: Cuenta[];
+  datos: Record<string, DatosAlumno>;
+  seleccionar: (u: string) => void;
+}) {
+  if (alumnos.length === 0) return null;
+  return (
+    <div className="tarjeta">
+      <div className="tarjeta-cab">
+        <h3>Avance del grupo</h3>
+      </div>
+      <div className="items">
+        {alumnos.map((a) => {
+          const d = datos[a.usuario] ?? vacioDatos();
+          const totalD = d.diag ? materias.reduce((suma, m) => suma + (d.diag as Resultado)[m], 0) : null;
+          const hechos = materias.filter((m) => d.resultados[m] !== null).length;
+          const alDia = totalD !== null && hechos === materias.length;
+          return (
+            <button className="fila-item" key={a.usuario} onClick={() => seleccionar(a.usuario)}>
+              <span className="fila-icono">{a.nombre.charAt(0).toUpperCase()}</span>
+              <span className="fila-texto">
+                <strong>{a.nombre}</strong>
+                <small>
+                  {totalD === null ? "Sin diagnóstico" : `Diagnóstico ${totalD}/${diagnostico.length}`} · Ejercicios {hechos}/{materias.length}
+                </small>
+              </span>
+              <span className={alDia ? "estado ok" : "estado pend"}>{alDia ? "Completo" : "En curso"}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PanelDocente({
   nombre,
   alumnos,
@@ -2052,6 +2172,7 @@ function PanelDocente({
   setAlumnoSel,
   resultados,
   diag,
+  datos,
   articulos,
   posts,
   ir,
@@ -2062,6 +2183,7 @@ function PanelDocente({
   setAlumnoSel: (u: string) => void;
   resultados: ResultadosEj;
   diag: Resultado | null;
+  datos: Record<string, DatosAlumno>;
   articulos: Articulos;
   posts: Publicacion[];
   ir: Ir;
@@ -2089,6 +2211,8 @@ function PanelDocente({
         </div>
       </div>
 
+      <ResumenGrupo alumnos={alumnos} datos={datos} seleccionar={setAlumnoSel} />
+
       <div className="tarjeta">
         <h3>Estudiante a revisar</h3>
         <SelectorAlumno alumnos={alumnos} valor={alumnoSel} setValor={setAlumnoSel} />
@@ -2100,55 +2224,34 @@ function PanelDocente({
 }
 
 export default function App() {
-  const [cuentas, setCuentas] = useState<Cuenta[]>(() => leer<Cuenta[]>("rr.cuentas", []));
-  const [sesion, setSesion] = useState<Sesion | null>(() => {
-    const s = leer<Sesion | null>("rr.sesion", null);
-    const c = s ? leer<Cuenta[]>("rr.cuentas", []).find((x) => x.usuario === s.usuario) : undefined;
-    return c ? { rol: c.rol, nombre: c.nombre, usuario: c.usuario } : null;
-  });
+  const [cuentas, setCuentas, estCuentas] = useNube<Cuenta[]>("cuentas", []);
+  const [sesion, setSesion] = useState<Sesion | null>(() => leer<Sesion | null>("rr.sesion", null));
   const [seccion, setSeccion] = useState<Seccion>("inicio");
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [materiaSel, setMateriaSel] = useState<Materia>("Matemáticas");
   const [alumnoDoc, setAlumnoDoc] = useState("");
-  const [datos, setDatos] = useState<Record<string, DatosAlumno>>(() => leer<Record<string, DatosAlumno>>("rr.datos", {}));
-  const [articulos, setArticulos] = useState<Articulos>(() => leer<Articulos>("rr.articulos", resumenes));
-  const [posts, setPosts] = useState<Publicacion[]>(() =>
-    leer<Publicacion[]>("rr.foro", [
-      {
-        id: 1,
-        materia: "Matemáticas",
-        rol: "Tutor",
-        autor: "",
-        nombre: "Equipo docente",
-        grupo: "*",
-        texto: "Bienvenidos al foro. Publiquen aquí sus dudas de cada materia.",
-        respuestas: [],
-      },
-    ])
-  );
-  const [notificaciones, setNotificaciones] = useState<Notificacion[]>(() => leer<Notificacion[]>("rr.avisos", []));
+  const [datos, setDatos, estDatos] = useNube<Record<string, DatosAlumno>>("datos", {});
+  const [articulos, setArticulos, estArticulos] = useNube<Articulos>("articulos", resumenes);
+  const [posts, setPosts, estForo] = useNube<Publicacion[]>("foro", [
+    {
+      id: 1,
+      materia: "Matemáticas",
+      rol: "Tutor",
+      autor: "",
+      nombre: "Equipo docente",
+      grupo: "*",
+      texto: "Bienvenidos al foro. Publiquen aquí sus dudas de cada materia.",
+      respuestas: [],
+    },
+  ]);
+  const [notificaciones, setNotificaciones, estAvisos] = useNube<Notificacion[]>("avisos", []);
   const [notiAbierto, setNotiAbierto] = useState(false);
   const idNoti = useRef(Date.now());
 
   useEffect(() => {
-    escribir("rr.cuentas", cuentas);
-  }, [cuentas]);
-  useEffect(() => {
     escribir("rr.sesion", sesion);
   }, [sesion]);
-  useEffect(() => {
-    escribir("rr.datos", datos);
-  }, [datos]);
-  useEffect(() => {
-    escribir("rr.articulos", articulos);
-  }, [articulos]);
-  useEffect(() => {
-    escribir("rr.foro", posts);
-  }, [posts]);
-  useEffect(() => {
-    escribir("rr.avisos", notificaciones);
-  }, [notificaciones]);
 
   const notificar: Notificar = (para, texto, destinoSeccion) => {
     const hora = new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
@@ -2191,6 +2294,11 @@ export default function App() {
     notificar({ roles: ["docente"], usuarios: familiasDe(u) }, `${sesion.nombre} terminó el examen diagnóstico`, "panel");
   };
 
+  const marcarPaso = (id: string, hecho: boolean) => {
+    if (!sesion) return;
+    actualizarDatos(sesion.usuario, (d) => ({ ...d, pasos: { ...(d.pasos ?? {}), [id]: hecho } }));
+  };
+
   const ir: Ir = (s, m) => {
     if (m) setMateriaSel(m);
     setSeccion(s);
@@ -2226,6 +2334,30 @@ export default function App() {
     setBusqueda("");
   };
 
+  const estados = [estCuentas, estDatos, estArticulos, estForo, estAvisos];
+
+  if (estados.includes("error")) {
+    return (
+      <div className="login-fondo">
+        <div className="tarjeta aviso">
+          <h3>No se pudo conectar con la base de datos</h3>
+          <p>Revisa tu conexión a internet y la configuración de Firebase. Después recarga la página.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (estados.includes("cargando")) {
+    return (
+      <div className="login-fondo">
+        <div className="tarjeta aviso">
+          <h3>Conectando con la base de datos</h3>
+          <p>Un momento, por favor.</p>
+        </div>
+      </div>
+    );
+  }
+
   const yo = sesion ? cuentas.find((c) => c.usuario === sesion.usuario) : undefined;
 
   if (!sesion || !yo) {
@@ -2249,6 +2381,7 @@ export default function App() {
   const datosVista = datos[alumnoVista] ?? vacioDatos();
   const diag = datosVista.diag;
   const resultados = datosVista.resultados;
+  const pasos = datosVista.pasos ?? {};
 
   const postsVisibles = posts.filter((p) => docente || p.grupo === "*" || p.grupo === grupo);
 
@@ -2471,6 +2604,7 @@ export default function App() {
                 setAlumnoSel={setAlumnoDoc}
                 resultados={resultados}
                 diag={diag}
+                datos={datos}
                 articulos={articulos}
                 posts={posts}
                 ir={ir}
@@ -2478,7 +2612,7 @@ export default function App() {
             ) : familia ? (
               <PanelFamilia nombre={sesion.nombre} alumnoNombre={alumnoNombre} resultados={resultados} diag={diag} ir={ir} />
             ) : (
-              <Panel nombre={sesion.nombre} resultados={resultados} diag={diag} ir={ir} />
+              <Panel nombre={sesion.nombre} resultados={resultados} diag={diag} pasos={pasos} marcarPaso={marcarPaso} ir={ir} />
             ))}
         </main>
 
